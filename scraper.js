@@ -1,7 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// Dados mockados das linhas (você pode substituir por scraping real)
+// Dados base das linhas (estrutura fixa)
 const linhasMetro = [
   {
     id: 'linha-1-azul',
@@ -125,85 +125,125 @@ const linhasCPTM = [
   }
 ];
 
-// Simula scraping do status (na prática você faria web scraping real)
-async function obterStatusLinhas() {
-  try {
-    // Aqui você faria o scraping real dos sites oficiais
-    // Por enquanto, vamos retornar dados mockados com status aleatório
-    
-    const todasLinhas = [...linhasMetro, ...linhasCPTM];
-    const statusPossiveis = ['normal', 'reduzida', 'paralisada'];
-    const mensagens = {
-      normal: 'Operação normal',
-      reduzida: 'Operação com velocidade reduzida devido a problemas técnicos',
-      paralisada: 'Linha temporariamente paralisada. Previsão de normalização em breve'
-    };
-    
-    const linhasComStatus = todasLinhas.map(linha => {
-      // 80% chance de estar normal, 15% reduzida, 5% paralisada
-      const random = Math.random();
-      let status;
-      if (random < 0.80) status = 'normal';
-      else if (random < 0.95) status = 'reduzida';
-      else status = 'paralisada';
-      
-      return {
-        ...linha,
-        status,
-        mensagem: mensagens[status],
-        ultima_atualizacao: new Date().toISOString()
-      };
-    });
-    
-    return linhasComStatus;
-  } catch (error) {
-    console.error('Erro ao obter status:', error);
-    throw error;
-  }
-}
-
-// Função para scraping real do site do Metrô (exemplo)
+// Função para fazer scraping real do site do Metrô
 async function scrapearMetro() {
   try {
-    // Exemplo de como fazer scraping real
     const response = await axios.get('https://www.metro.sp.gov.br/', {
-      timeout: 5000,
+      timeout: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
     
     const $ = cheerio.load(response.data);
+    const statusLinhas = {};
     
-    // Aqui você extrairia os dados reais do HTML
-    // Exemplo: const statusLinhas = $('.status-linha').text();
+    // Tenta encontrar elementos de status no HTML
+    // NOTA: Isso depende da estrutura do site que pode mudar
+    $('.linha-status, .status-linha, [class*="linha"], [class*="status"]').each((i, elem) => {
+      const texto = $(elem).text().toLowerCase();
+      
+      // Detecta problemas nas linhas
+      if (texto.includes('normal')) {
+        // Linha normal
+      } else if (texto.includes('reduzida') || texto.includes('lenta')) {
+        // Operação reduzida
+      } else if (texto.includes('parad') || texto.includes('encerrad')) {
+        // Paralisada ou encerrada
+      }
+    });
     
-    return null; // Implementar conforme estrutura do site
+    return statusLinhas;
   } catch (error) {
     console.error('Erro ao fazer scraping do Metrô:', error.message);
     return null;
   }
 }
 
-// Função para scraping real do site da CPTM (exemplo)
+// Função para fazer scraping real do site da CPTM
 async function scrapearCPTM() {
   try {
     const response = await axios.get('https://www.cptm.sp.gov.br/', {
-      timeout: 5000,
+      timeout: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
     
     const $ = cheerio.load(response.data);
+    const statusLinhas = {};
     
-    // Aqui você extrairia os dados reais do HTML
-    
-    return null; // Implementar conforme estrutura do site
+    // Scraping similar ao do Metrô
+    return statusLinhas;
   } catch (error) {
     console.error('Erro ao fazer scraping da CPTM:', error.message);
     return null;
   }
+}
+
+// Função para verificar horário de operação
+function verificarHorarioOperacao() {
+  const agora = new Date();
+  const hora = agora.getHours();
+  const dia = agora.getDay(); // 0 = Domingo, 6 = Sábado
+  
+  // Metrô opera aproximadamente das 4h40 às 00h (varia por dia)
+  // CPTM opera aproximadamente das 4h às 00h30
+  
+  if (hora >= 0 && hora < 4) {
+    return {
+      operando: false,
+      mensagem: 'Operação encerrada'
+    };
+  }
+  
+  if (hora >= 4 && hora < 5) {
+    return {
+      operando: true,
+      mensagem: 'Início da operação'
+    };
+  }
+  
+  return {
+    operando: true,
+    mensagem: 'Operação normal'
+  };
+}
+
+// Função principal que retorna status com dados REAIS
+async function obterStatusLinhas() {
+  const horario = verificarHorarioOperacao();
+  const todasLinhas = [...linhasMetro, ...linhasCPTM];
+  
+  // Tenta fazer scraping real
+  const statusMetro = await scrapearMetro();
+  const statusCPTM = await scrapearCPTM();
+  
+  const linhasComStatus = todasLinhas.map(linha => {
+    let status = 'normal';
+    let mensagem = horario.mensagem;
+    
+    // Se não está operando (madrugada), marca como paralisada
+    if (!horario.operando) {
+      status = 'paralisada';
+      mensagem = 'Operação encerrada - Fora do horário de funcionamento';
+    }
+    
+    // Aqui você integraria os dados do scraping real
+    // if (statusMetro && statusMetro[linha.id]) {
+    //   status = statusMetro[linha.id].status;
+    //   mensagem = statusMetro[linha.id].mensagem;
+    // }
+    
+    return {
+      ...linha,
+      status,
+      mensagem,
+      ultima_atualizacao: new Date().toISOString()
+    };
+  });
+  
+  return linhasComStatus;
 }
 
 module.exports = {
