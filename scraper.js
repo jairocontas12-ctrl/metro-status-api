@@ -2,6 +2,30 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 
 // ========================================
+// CONFIGURAÇÕES
+// ========================================
+
+const CONFIG = {
+  CACHE_DURATION: 60000, // 1 minuto (60 segundos)
+  REQUEST_TIMEOUT: 15000, // 15 segundos
+  RETRY_ATTEMPTS: 3,
+  RETRY_DELAY: 2000, // 2 segundos
+};
+
+// User-agents rotativos (parecer navegador real)
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+];
+
+// Cache global
+let cacheGlobal = {
+  dados: null,
+  timestamp: null,
+};
+
+// ========================================
 // DADOS BASE DAS LINHAS
 // ========================================
 
@@ -69,7 +93,6 @@ const linhasCPTMBase = [
     numero: '7',
     apelido: 'Rubi',
     tipo: 'cptm',
-    identificadorAPI: '7',
     cor: { primaria: '#CA016B', secundaria: null },
     estacoes: ['Luz', 'Palmeiras-Barra Funda', 'Água Branca', 'Lapa', 'Piqueri', 'Pirituba', 'Vila Clarice', 'Jaraguá', 'Perus', 'Caieiras', 'Franco da Rocha', 'Baltazar Fidélis', 'Francisco Morato', 'Botujuru', 'Campo Limpo Paulista', 'Várzea Paulista', 'Jundiaí']
   },
@@ -79,7 +102,6 @@ const linhasCPTMBase = [
     numero: '8',
     apelido: 'Diamante',
     tipo: 'cptm',
-    identificadorAPI: '8',
     cor: { primaria: '#97A098', secundaria: null },
     estacoes: ['Júlio Prestes', 'Palmeiras-Barra Funda', 'Lapa', 'Domingos de Morais', 'Imperatriz Leopoldina', 'Presidente Altino', 'Osasco', 'Comandante Sampaio', 'Quitaúna', 'General Miguel Costa', 'Carapicuíba', 'Santa Terezinha', 'Antônio João', 'Barueri', 'Jardim Belval', 'Jardim Silveira', 'Jandira', 'Sagrado Coração', 'Engenheiro Cardoso', 'Itapevi', 'Santa Rita', 'Amador Bueno']
   },
@@ -89,7 +111,6 @@ const linhasCPTMBase = [
     numero: '9',
     apelido: 'Esmeralda',
     tipo: 'cptm',
-    identificadorAPI: '9',
     cor: { primaria: '#01A9A7', secundaria: null },
     estacoes: ['Osasco', 'Presidente Altino', 'Ceasa', 'Villa-Lobos-Jaguaré', 'Cidade Universitária', 'Pinheiros', 'Hebraica-Rebouças', 'Cidade Jardim', 'Vila Olímpia', 'Berrini', 'Morumbi', 'Granja Julieta', 'Santo Amaro', 'Socorro', 'Jurubatuba', 'Autódromo', 'Primavera-Interlagos', 'Grajaú']
   },
@@ -99,7 +120,6 @@ const linhasCPTMBase = [
     numero: '10',
     apelido: 'Turquesa',
     tipo: 'cptm',
-    identificadorAPI: '10',
     cor: { primaria: '#049FC3', secundaria: null },
     estacoes: ['Brás', 'Tatuapé', 'Ipiranga', 'Tamanduateí', 'São Caetano do Sul', 'Utinga', 'Prefeito Saladino', 'Prefeito Celso Daniel-Santo André', 'Capuava', 'Mauá', 'Guapituba', 'Ribeirão Pires', 'Rio Grande da Serra']
   },
@@ -109,7 +129,6 @@ const linhasCPTMBase = [
     numero: '11',
     apelido: 'Coral',
     tipo: 'cptm',
-    identificadorAPI: '11',
     cor: { primaria: '#F68368', secundaria: null },
     estacoes: ['Luz', 'Brás', 'Tatuapé', 'Corinthians-Itaquera', 'Dom Bosco', 'José Bonifácio', 'Guaianases', 'Antonio Gianetti Neto', 'Ferraz de Vasconcelos', 'Poá', 'Calmon Viana', 'Suzano', 'Jundiapeba', 'Braz Cubas', 'Mogi das Cruzes', 'Estudantes']
   },
@@ -119,7 +138,6 @@ const linhasCPTMBase = [
     numero: '12',
     apelido: 'Safira',
     tipo: 'cptm',
-    identificadorAPI: '12',
     cor: { primaria: '#133C8D', secundaria: null },
     estacoes: ['Brás', 'Tatuapé', 'Engenheiro Goulart', 'USP Leste', 'Comendador Ermelino', 'São Miguel Paulista', 'Jardim Helena-Vila Mara', 'Itaim Paulista', 'Jardim Romano', 'Engenheiro Manuel Feio', 'Itaquaquecetuba', 'Aracaré', 'Calmon Viana']
   },
@@ -129,120 +147,34 @@ const linhasCPTMBase = [
     numero: '13',
     apelido: 'Jade',
     tipo: 'cptm',
-    identificadorAPI: '13',
     cor: { primaria: '#00AB4E', secundaria: null },
     estacoes: ['Engenheiro Goulart', 'Aeroporto-Guarulhos']
   }
 ];
 
 // ========================================
-// FUNÇÕES DE SCRAPING/API
+// UTILITÁRIOS
 // ========================================
 
-// Busca dados REAIS da API oficial da CPTM
-async function buscarStatusCPTM() {
-  try {
-    console.log('🔄 Buscando dados da API oficial da CPTM...');
-    
-    const response = await axios.get('https://open-linhas-api-roli.rota.os.sp.gov.br/status', {
-      timeout: 10000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    console.log('✅ Dados da CPTM obtidos com sucesso!');
-    
-    // A API retorna um array de objetos com status de cada linha
-    const statusPorLinha = {};
-    
-    if (response.data && Array.isArray(response.data)) {
-      response.data.forEach(item => {
-        // Mapeia o status da API para nosso formato
-        let status = 'normal';
-        let mensagem = 'Operação normal';
-        
-        const statusAPI = item.status ? item.status.toLowerCase() : '';
-        const nomeLinhaAPI = item.name || item.linha || item.id || '';
-        
-        // Detecta problemas
-        if (statusAPI.includes('encerrad') || statusAPI.includes('fechad')) {
-          status = 'paralisada';
-          mensagem = 'Operação encerrada';
-        } else if (statusAPI.includes('parad') || statusAPI.includes('paralisa')) {
-          status = 'paralisada';
-          mensagem = 'Linha paralisada';
-        } else if (statusAPI.includes('reduz') || statusAPI.includes('lent')) {
-          status = 'reduzida';
-          mensagem = 'Operação com velocidade reduzida';
-        } else if (statusAPI.includes('parcial')) {
-          status = 'reduzida';
-          mensagem = 'Operação parcial';
-        } else if (statusAPI.includes('normal')) {
-          status = 'normal';
-          mensagem = 'Operação normal';
-        }
-        
-        // Identifica a linha pelo número
-        const numeroLinha = nomeLinhaAPI.match(/\d+/);
-        if (numeroLinha) {
-          statusPorLinha[numeroLinha[0]] = { status, mensagem };
-        }
-      });
-    }
-    
-    return statusPorLinha;
-  } catch (error) {
-    console.error('❌ Erro ao buscar API da CPTM:', error.message);
-    return null;
-  }
+function getRandomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-// Tenta fazer scraping do site do Metrô
-async function buscarStatusMetro() {
-  try {
-    console.log('🔄 Tentando scraping do site do Metrô...');
-    
-    const response = await axios.get('https://www.metro.sp.gov.br/', {
-      timeout: 10000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    const $ = cheerio.load(response.data);
-    const statusPorLinha = {};
-    
-    // Procura por elementos que contenham informações de status
-    // NOTA: A estrutura do site pode mudar, isso é uma tentativa
-    $('*').each((i, elem) => {
-      const texto = $(elem).text().toLowerCase();
-      const classes = $(elem).attr('class') || '';
-      
-      // Procura menções de linhas e seus status
-      if (texto.includes('linha') && (texto.includes('normal') || texto.includes('reduzida') || texto.includes('parad'))) {
-        // Tenta extrair informações...
-      }
-    });
-    
-    console.log('✅ Scraping do Metrô concluído');
-    return statusPorLinha;
-  } catch (error) {
-    console.error('⚠️ Não foi possível fazer scraping do Metrô:', error.message);
-    return null;
-  }
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Verifica horário de operação
 function verificarHorarioOperacao() {
   const agora = new Date();
-  const horaLocal = agora.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', hour12: false });
+  const horaLocal = agora.toLocaleString('pt-BR', { 
+    timeZone: 'America/Sao_Paulo', 
+    hour: '2-digit', 
+    minute: '2-digit', 
+    hour12: false 
+  });
   const hora = parseInt(horaLocal.split(':')[0]);
   
   console.log(`🕐 Horário atual em São Paulo: ${horaLocal} (${hora}h)`);
-  
-  // Metrô opera aproximadamente das 4h40 às 00h
-  // CPTM opera aproximadamente das 4h às 00h30
   
   if (hora >= 0 && hora < 4) {
     return {
@@ -265,32 +197,212 @@ function verificarHorarioOperacao() {
 }
 
 // ========================================
-// FUNÇÃO PRINCIPAL
+// SCRAPING COM RETRY E ANTI-BLOQUEIO
+// ========================================
+
+async function fazerRequestComRetry(url, tentativas = CONFIG.RETRY_ATTEMPTS) {
+  for (let i = 0; i < tentativas; i++) {
+    try {
+      console.log(`🔄 Tentativa ${i + 1}/${tentativas}: ${url}`);
+      
+      const response = await axios.get(url, {
+        timeout: CONFIG.REQUEST_TIMEOUT,
+        headers: {
+          'User-Agent': getRandomUserAgent(),
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1',
+          'Cache-Control': 'max-age=0',
+        }
+      });
+      
+      console.log(`✅ Sucesso: ${url}`);
+      return response;
+      
+    } catch (error) {
+      console.error(`❌ Tentativa ${i + 1} falhou: ${error.message}`);
+      
+      if (i < tentativas - 1) {
+        const delayTime = CONFIG.RETRY_DELAY * (i + 1); // Backoff exponencial
+        console.log(`⏳ Aguardando ${delayTime}ms antes de tentar novamente...`);
+        await delay(delayTime);
+      } else {
+        console.error(`💥 Todas as tentativas falharam para: ${url}`);
+        throw error;
+      }
+    }
+  }
+}
+
+// ========================================
+// SCRAPING CPTM (API OFICIAL)
+// ========================================
+
+async function buscarStatusCPTM() {
+  try {
+    console.log('\n🚂 CPTM: Buscando dados da API oficial do governo...');
+    
+    const response = await fazerRequestComRetry('https://open-linhas-api-roli.rota.os.sp.gov.br/status');
+    
+    const statusPorLinha = {};
+    
+    if (response.data && Array.isArray(response.data)) {
+      response.data.forEach(item => {
+        let status = 'normal';
+        let mensagem = 'Operação normal';
+        
+        const statusAPI = item.status ? item.status.toLowerCase() : '';
+        const nomeLinhaAPI = item.name || item.linha || item.id || '';
+        
+        if (statusAPI.includes('encerrad') || statusAPI.includes('fechad')) {
+          status = 'paralisada';
+          mensagem = 'Operação encerrada';
+        } else if (statusAPI.includes('parad') || statusAPI.includes('paralisa')) {
+          status = 'paralisada';
+          mensagem = 'Linha paralisada';
+        } else if (statusAPI.includes('reduz') || statusAPI.includes('lent')) {
+          status = 'reduzida';
+          mensagem = 'Operação com velocidade reduzida';
+        } else if (statusAPI.includes('parcial')) {
+          status = 'reduzida';
+          mensagem = 'Operação parcial';
+        } else if (statusAPI.includes('normal')) {
+          status = 'normal';
+          mensagem = 'Operação normal';
+        }
+        
+        const numeroLinha = nomeLinhaAPI.match(/\d+/);
+        if (numeroLinha) {
+          statusPorLinha[numeroLinha[0]] = { status, mensagem };
+          console.log(`  ✓ Linha ${numeroLinha[0]}: ${status} - ${mensagem}`);
+        }
+      });
+      
+      console.log('✅ CPTM: Dados obtidos da API oficial!\n');
+      return statusPorLinha;
+    }
+    
+    console.log('⚠️  CPTM: API retornou dados vazios\n');
+    return null;
+    
+  } catch (error) {
+    console.error(`❌ CPTM: Erro ao buscar API oficial - ${error.message}\n`);
+    return null;
+  }
+}
+
+// ========================================
+// SCRAPING METRÔ (SITE OFICIAL)
+// ========================================
+
+async function buscarStatusMetro() {
+  try {
+    console.log('🚇 METRÔ: Tentando scraping do site oficial...');
+    
+    const response = await fazerRequestComRetry('https://www.metro.sp.gov.br/');
+    const $ = cheerio.load(response.data);
+    const statusPorLinha = {};
+    
+    // Lista de possíveis seletores (adaptativo)
+    const seletoresPossiveis = [
+      '.linha-status',
+      '.status-linha', 
+      '[class*="linha"]',
+      '[class*="status"]',
+      '[data-linha]',
+      '.situacao-linha',
+      '.operation-status',
+    ];
+    
+    let encontrouDados = false;
+    
+    // Tenta cada seletor
+    for (const seletor of seletoresPossiveis) {
+      $(seletor).each((i, elem) => {
+        const texto = $(elem).text().toLowerCase();
+        const html = $(elem).html();
+        
+        // Detecta número da linha
+        const numeroMatch = texto.match(/linha\s*(\d+)/);
+        if (numeroMatch) {
+          const numero = numeroMatch[1];
+          let status = 'normal';
+          let mensagem = 'Operação normal';
+          
+          // Detecta status
+          if (texto.includes('encerrad') || texto.includes('fechad')) {
+            status = 'paralisada';
+            mensagem = 'Operação encerrada';
+          } else if (texto.includes('parad') || texto.includes('paralisa')) {
+            status = 'paralisada';
+            mensagem = 'Linha paralisada';
+          } else if (texto.includes('reduz') || texto.includes('lent')) {
+            status = 'reduzida';
+            mensagem = 'Operação com velocidade reduzida';
+          } else if (texto.includes('parcial')) {
+            status = 'reduzida';
+            mensagem = 'Operação parcial';
+          }
+          
+          statusPorLinha[numero] = { status, mensagem };
+          encontrouDados = true;
+          console.log(`  ✓ Linha ${numero}: ${status} - ${mensagem}`);
+        }
+      });
+      
+      if (encontrouDados) break;
+    }
+    
+    if (encontrouDados) {
+      console.log('✅ METRÔ: Dados obtidos do site oficial!\n');
+      return statusPorLinha;
+    }
+    
+    console.log('⚠️  METRÔ: Não foi possível extrair dados do site\n');
+    return null;
+    
+  } catch (error) {
+    console.error(`❌ METRÔ: Erro ao fazer scraping - ${error.message}\n`);
+    return null;
+  }
+}
+
+// ========================================
+// FUNÇÃO PRINCIPAL COM CACHE
 // ========================================
 
 async function obterStatusLinhas() {
-  console.log('\n🚇 Iniciando busca de status das linhas...\n');
+  // Verifica cache
+  const agora = Date.now();
+  if (cacheGlobal.dados && cacheGlobal.timestamp && (agora - cacheGlobal.timestamp) < CONFIG.CACHE_DURATION) {
+    console.log('💾 Retornando dados do cache\n');
+    return cacheGlobal.dados;
+  }
+  
+  console.log('\n🚇🚂 ===== INICIANDO BUSCA DE STATUS =====\n');
   
   const horario = verificarHorarioOperacao();
   
-  // Busca dados reais
+  // Busca dados das fontes oficiais
   const statusCPTM = await buscarStatusCPTM();
+  await delay(1000); // Delay entre requisições
   const statusMetro = await buscarStatusMetro();
   
-  // Processa CPTM com dados REAIS da API
+  // Processa CPTM
   const linhasCPTM = linhasCPTMBase.map(linha => {
     let status = 'normal';
     let mensagem = horario.mensagem;
+    let fonte = 'Horário de operação';
     
-    // Se não está operando (madrugada)
     if (!horario.operando) {
       status = 'paralisada';
       mensagem = horario.mensagem;
-    }
-    // Se conseguiu dados da API oficial
-    else if (statusCPTM && statusCPTM[linha.numero]) {
+    } else if (statusCPTM && statusCPTM[linha.numero]) {
       status = statusCPTM[linha.numero].status;
       mensagem = statusCPTM[linha.numero].mensagem;
+      fonte = 'API Oficial CPTM (Governo SP)';
     }
     
     return {
@@ -298,24 +410,23 @@ async function obterStatusLinhas() {
       status,
       mensagem,
       ultima_atualizacao: new Date().toISOString(),
-      fonte: statusCPTM ? 'API Oficial CPTM' : 'Horário de operação'
+      fonte
     };
   });
   
-  // Processa Metrô (scraping ou horário)
+  // Processa Metrô
   const linhasMetroComStatus = linhasMetro.map(linha => {
     let status = 'normal';
     let mensagem = horario.mensagem;
+    let fonte = 'Horário de operação';
     
-    // Se não está operando (madrugada)
     if (!horario.operando) {
       status = 'paralisada';
       mensagem = horario.mensagem;
-    }
-    // Se conseguiu dados do scraping
-    else if (statusMetro && statusMetro[linha.numero]) {
+    } else if (statusMetro && statusMetro[linha.numero]) {
       status = statusMetro[linha.numero].status;
       mensagem = statusMetro[linha.numero].mensagem;
+      fonte = 'Scraping Site Oficial Metrô SP';
     }
     
     return {
@@ -323,13 +434,19 @@ async function obterStatusLinhas() {
       status,
       mensagem,
       ultima_atualizacao: new Date().toISOString(),
-      fonte: statusMetro ? 'Scraping Metrô SP' : 'Horário de operação'
+      fonte
     };
   });
   
   const todasLinhas = [...linhasMetroComStatus, ...linhasCPTM];
   
-  console.log('\n✅ Status de todas as linhas obtido!\n');
+  // Atualiza cache
+  cacheGlobal = {
+    dados: todasLinhas,
+    timestamp: agora
+  };
+  
+  console.log('✅ ===== BUSCA CONCLUÍDA =====\n');
   
   return todasLinhas;
 }
