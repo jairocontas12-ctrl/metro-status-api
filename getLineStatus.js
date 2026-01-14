@@ -1,5 +1,5 @@
-// Metro Status API - Versão Atualizada (Janeiro 2026)
-// URL e scraping atualizados para o novo site do Metrô
+// Metro Status API - Versão 2.2 (Janeiro 2026)
+// Scraping atualizado para estrutura atual do site
 
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -18,7 +18,7 @@ let cachedData = null;
 let lastFetch = null;
 const CACHE_DURATION = 60000; // 1 minuto
 
-// URL ATUALIZADA do site do Metrô (Janeiro 2026)
+// URL do site do Metrô (Janeiro 2026)
 const METRO_URL = 'https://www.metro.sp.gov.br/direto-do-metro';
 
 // Mapeamento de status
@@ -32,97 +32,98 @@ const STATUS_MAP = {
 };
 
 /**
- * Busca status de todas as linhas (scraping do site oficial)
+ * Busca status de todas as linhas
  */
 async function getLineStatus() {
   try {
+    console.log('🔍 Buscando dados do Metrô...');
+    
     const response = await axios.get(METRO_URL, {
       timeout: 15000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
       }
     });
 
     const $ = cheerio.load(response.data);
     const lines = [];
 
-    // Novo scraping baseado na estrutura atual do site
+    console.log('📄 HTML recebido, fazendo scraping...');
+
+    // ESTRUTURA ATUAL: <ol> com <li> items
+    // Cada <li> tem: número, nome da cor, status
     $('ol li').each((index, element) => {
       const $item = $(element);
+      const fullText = $item.text().trim();
       
-      // Extrair número e nome da linha
-      const numberText = $item.find('.numero-linha').text().trim();
-      const colorText = $item.find('.nome-linha').text().trim();
+      // Extrair informações do texto
+      // Formato: "1 Azul Operação Normal"
+      const parts = fullText.split('\n').map(s => s.trim()).filter(Boolean);
       
-      // Extrair status
-      const statusText = $item.find('.status-linha').text().trim() || 'Operação Normal';
-      
-      if (numberText && colorText) {
-        const statusInfo = STATUS_MAP[statusText] || { 
-          code: 99, 
-          description: statusText 
-        };
-
-        const lineName = `Linha ${numberText} - ${colorText}`;
-
+      if (parts.length >= 3) {
+        const number = parts[0];
+        const color = parts[1];
+        const status = parts[2];
+        
+        const statusInfo = STATUS_MAP[status] || { code: 0, description: status };
+        
         lines.push({
-          name: lineName,
-          number: numberText,
+          name: `Linha ${number} - ${color}`,
+          number: number,
           status: statusInfo.code,
-          statusDescription: statusText,
-          description: statusText,
+          statusDescription: status,
+          description: status,
           lastUpdate: new Date().toISOString()
         });
+        
+        console.log(`✅ Linha ${number} - ${color}: ${status}`);
       }
     });
 
-    // Se não encontrou nada com a nova estrutura, tenta estrutura antiga
+    // Fallback: tentar estrutura alternativa se não encontrou nada
     if (lines.length === 0) {
-      $('.cards-item').each((index, element) => {
-        const $card = $(element);
+      console.log('⚠️ Tentando estrutura alternativa...');
+      
+      // Tentar capturar todo o texto e parsear
+      const mainContent = $('#main').text() || $('main').text() || $('body').text();
+      
+      // Procurar padrões como "1 Azul Operação Normal"
+      const linePattern = /(\d+)\s+(Azul|Verde|Vermelha|Amarela|Lilás|Prata|Coral|Diamante|Esmeralda|Turquesa|Safira|Jade)\s+(.+?)(?=\d+\s+[A-Z]|Atualizado|$)/gi;
+      let match;
+      
+      while ((match = linePattern.exec(mainContent)) !== null) {
+        const number = match[1];
+        const color = match[2];
+        const status = match[3].trim();
         
-        const name = $card.find('.titulos, .titulo, h3, h2').first().text().trim();
-        const statusText = $card.find('.operacao, .status').first().text().trim();
-        const description = $card.find('.description, .descricao').first().text().trim();
+        const statusInfo = STATUS_MAP[status] || { code: 0, description: status };
         
-        if (name) {
-          const statusInfo = STATUS_MAP[statusText] || { 
-            code: 99, 
-            description: statusText || 'Operação Normal'
-          };
-
-          lines.push({
-            name: name,
-            number: extractLineNumber(name),
-            status: statusInfo.code,
-            statusDescription: statusText || 'Operação Normal',
-            description: description || statusText || 'Operação Normal',
-            lastUpdate: new Date().toISOString()
-          });
-        }
-      });
+        lines.push({
+          name: `Linha ${number} - ${color}`,
+          number: number,
+          status: statusInfo.code,
+          statusDescription: status,
+          description: status,
+          lastUpdate: new Date().toISOString()
+        });
+        
+        console.log(`✅ [Fallback] Linha ${number} - ${color}: ${status}`);
+      }
     }
 
     if (lines.length === 0) {
+      console.error('❌ Nenhuma linha encontrada!');
       throw new Error('Nenhuma linha encontrada no scraping');
     }
 
+    console.log(`✅ Total: ${lines.length} linhas encontradas`);
     return lines;
 
   } catch (error) {
-    console.error('Erro ao buscar dados do metrô:', error.message);
+    console.error('❌ Erro ao buscar dados:', error.message);
     throw error;
   }
-}
-
-/**
- * Extrai número da linha
- */
-function extractLineNumber(name) {
-  const match = name.match(/Linha\s+(\d+)/i) || name.match(/(\d+)\s*-/);
-  return match ? match[1] : null;
 }
 
 /**
@@ -132,6 +133,7 @@ async function getCachedLineStatus() {
   const now = Date.now();
   
   if (cachedData && lastFetch && (now - lastFetch) < CACHE_DURATION) {
+    console.log('📦 Retornando dados do cache');
     return { lines: cachedData, cached: true };
   }
 
@@ -142,7 +144,7 @@ async function getCachedLineStatus() {
     return { lines, cached: false };
   } catch (error) {
     if (cachedData) {
-      console.warn('Usando cache devido a erro:', error.message);
+      console.warn('⚠️ Usando cache devido a erro:', error.message);
       return { 
         lines: cachedData, 
         cached: true,
@@ -224,6 +226,7 @@ app.get('/line/name/:name', async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
+    version: '2.2',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
     cacheAge: lastFetch ? Date.now() - lastFetch : null,
@@ -317,9 +320,9 @@ app.post('/refresh', async (req, res) => {
 app.get('/info', (req, res) => {
   res.json({
     name: 'Metro Status API - São Paulo',
-    version: '2.1.0',
+    version: '2.2.0',
     updated: 'Janeiro 2026',
-    description: 'API em tempo real - Metrô, CPTM e Via Quatro',
+    description: 'API em tempo real - Metrô de SP',
     sourceUrl: METRO_URL,
     endpoints: {
       'GET /': 'Todas as linhas',
@@ -333,7 +336,7 @@ app.get('/info', (req, res) => {
       'POST /refresh': 'Forçar atualização'
     },
     statusCodes: {
-      0: 'Normal', 1: 'Vel. Reduzida', 2: 'Encerrada', 3: 'Paralisada', 99: 'Desconhecido'
+      0: 'Normal', 1: 'Vel. Reduzida', 2: 'Encerrada', 3: 'Paralisada'
     }
   });
 });
@@ -348,11 +351,11 @@ app.use((req, res) => {
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log('🚇 Metro Status API v2.1 (Atualizado Jan 2026)');
+  console.log('🚇 Metro Status API v2.2 (Jan 2026)');
   console.log(`📡 Porta: ${PORT}`);
-  console.log(`🌐 URL Metrô: ${METRO_URL}`);
-  console.log('✅ Cache ativo (1 min)');
-  console.log('✅ 9 endpoints disponíveis');
+  console.log(`🌐 URL: ${METRO_URL}`);
+  console.log('✅ Cache: 1 minuto');
+  console.log('✅ Scraping: Estrutura atual + fallback');
   console.log('🎯 Acesse /info para detalhes\n');
 });
 
