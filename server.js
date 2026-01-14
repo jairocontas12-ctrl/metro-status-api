@@ -1,129 +1,189 @@
-const express = require('express');
-const cors = require('cors');
-const swaggerUi = require('swagger-ui-express');
-const swaggerSpec = require('./swagger');
-const apiRoutes = require('./routes/api');
-const cron = require('node-cron');
-const { obterStatusLinhas } = require('./scraper');
+import express from 'express';
+import cors from 'cors';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middlewares
-app.use(cors());
-app.use(express.json());
-
-// Documentação Swagger
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-  customSiteTitle: 'API Metrô/CPTM - Documentação',
-  customCss: '.swagger-ui .topbar { display: none }',
-  swaggerOptions: {
-    persistAuthorization: true,
-  }
+// ===========================
+// CONFIGURAÇÃO CORS
+// ===========================
+app.use(cors({
+  origin: '*', // Permite qualquer domínio (incluindo seu WordPress)
+  methods: ['GET'],
+  credentials: false
 }));
 
-// Rotas da API
-app.use('/api', apiRoutes);
+app.use(express.json());
 
-/**
- * @swagger
- * /:
- *   get:
- *     summary: Página inicial da API
- *     description: Retorna informações básicas sobre a API
- *     tags: [Saúde]
- *     responses:
- *       200:
- *         description: Informações da API
- */
+// ===========================
+// DADOS DAS LINHAS
+// ===========================
+function getLinhasStatus() {
+  // Aqui você pode integrar com scraping do site oficial
+  // Por enquanto, retorna dados de exemplo
+  
+  return {
+    updatedAt: new Date().toISOString(),
+    source: "Metro SP API",
+    lines: [
+      // METRÔ
+      {
+        number: "1",
+        name: "Linha 1 - Azul",
+        operator: "Metrô",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "2",
+        name: "Linha 2 - Verde",
+        operator: "Metrô",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "3",
+        name: "Linha 3 - Vermelha",
+        operator: "Metrô",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "4",
+        name: "Linha 4 - Amarela",
+        operator: "Metrô",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "5",
+        name: "Linha 5 - Lilás",
+        operator: "Metrô",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "15",
+        name: "Linha 15 - Prata",
+        operator: "Metrô",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      
+      // CPTM
+      {
+        number: "7",
+        name: "Linha 7 - Rubi",
+        operator: "CPTM",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "8",
+        name: "Linha 8 - Diamante",
+        operator: "CPTM",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "9",
+        name: "Linha 9 - Esmeralda",
+        operator: "CPTM",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "10",
+        name: "Linha 10 - Turquesa",
+        operator: "CPTM",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "11",
+        name: "Linha 11 - Coral",
+        operator: "CPTM",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "12",
+        name: "Linha 12 - Safira",
+        operator: "CPTM",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      },
+      {
+        number: "13",
+        name: "Linha 13 - Jade",
+        operator: "CPTM",
+        status: "Operação Normal",
+        details: "Circulação normal em toda a linha"
+      }
+    ]
+  };
+}
+
+// ===========================
+// ROTAS
+// ===========================
+
+// Healthcheck
 app.get('/', (req, res) => {
-  res.json({
-    nome: 'API de Status - Metrô e CPTM São Paulo',
-    versao: '1.0.0',
-    descricao: 'API não-oficial para consultar status das linhas',
-    documentacao: `${req.protocol}://${req.get('host')}/docs`,
+  res.json({ 
+    status: 'ok',
+    message: 'Metro SP API - Funcionando!',
     endpoints: {
-      status_geral: '/api/status',
-      status_metro: '/api/status/metro',
-      status_cptm: '/api/status/cptm',
-      todas_linhas: '/api/linhas',
-      linha_especifica: '/api/linhas/{id}',
-      buscar_por_codigo: '/api/codigo/{codigo}'
-    },
-    github: 'https://github.com/seu-usuario/metro-status-api',
-    autor: 'Seu Nome'
+      status: '/status',
+      health: '/'
+    }
   });
 });
 
-/**
- * @swagger
- * /health:
- *   get:
- *     summary: Health check da API
- *     description: Verifica se a API está funcionando
- *     tags: [Saúde]
- *     responses:
- *       200:
- *         description: API está funcionando
- */
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
-});
-
-// Rota 404
-app.use((req, res) => {
-  res.status(404).json({
-    erro: 'Endpoint não encontrado',
-    codigo: 404,
-    detalhes: `A rota ${req.path} não existe. Consulte /docs para ver os endpoints disponíveis.`
-  });
-});
-
-// Handler de erros global
-app.use((err, req, res, next) => {
-  console.error('Erro:', err);
-  res.status(500).json({
-    erro: 'Erro interno do servidor',
-    codigo: 500,
-    detalhes: err.message
-  });
-});
-
-// Atualização automática a cada 2 minutos
-cron.schedule('*/2 * * * *', async () => {
+// Rota principal - Status das linhas
+app.get('/status', (req, res) => {
   try {
-    console.log('Atualizando dados das linhas...');
-    await obterStatusLinhas();
-    console.log('Dados atualizados com sucesso!');
+    const data = getLinhasStatus();
+    res.json(data);
   } catch (error) {
-    console.error('Erro ao atualizar dados:', error);
+    console.error('Erro ao buscar status:', error);
+    res.status(500).json({ 
+      error: 'Erro ao buscar dados',
+      message: error.message 
+    });
   }
 });
 
-// Inicia o servidor
-app.listen(PORT, () => {
-  console.log(`
-╔════════════════════════════════════════════════════════════╗
-║                                                            ║
-║   🚇 API de Status - Metrô e CPTM São Paulo               ║
-║                                                            ║
-║   Servidor rodando em: http://localhost:${PORT}              ║
-║   Documentação: http://localhost:${PORT}/docs               ║
-║                                                            ║
-║   Endpoints disponíveis:                                   ║
-║   • GET /api/status          - Status de todas as linhas   ║
-║   • GET /api/status/metro    - Status do Metrô             ║
-║   • GET /api/status/cptm     - Status da CPTM              ║
-║   • GET /api/linhas          - Lista todas as linhas       ║
-║   • GET /api/linhas/{id}     - Detalhes de uma linha       ║
-║   • GET /api/codigo/{numero} - Busca por número            ║
-║                                                            ║
-╚════════════════════════════════════════════════════════════╝
-  `);
+// Rota alternativa (alguns podem usar /api/status)
+app.get('/api/status', (req, res) => {
+  try {
+    const data = getLinhasStatus();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ 
+      error: 'Erro ao buscar dados',
+      message: error.message 
+    });
+  }
 });
 
-module.exports = app;
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Not Found',
+    message: `Rota ${req.path} não encontrada`,
+    availableRoutes: ['/', '/status', '/api/status']
+  });
+});
+
+// ===========================
+// INICIAR SERVIDOR
+// ===========================
+app.listen(PORT, () => {
+  console.log(`🚀 API rodando na porta ${PORT}`);
+  console.log(`✅ CORS habilitado para todos os domínios`);
+  console.log(`📡 Endpoints disponíveis:`);
+  console.log(`   - GET / (healthcheck)`);
+  console.log(`   - GET /status (dados das linhas)`);
+  console.log(`   - GET /api/status (dados das linhas)`);
+});
