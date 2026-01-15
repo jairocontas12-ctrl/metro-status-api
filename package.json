@@ -1,30 +1,53 @@
 {
-  "name": "metro-status-api",
-  "version": "2.0.0",
-  "description": "API para consultar status do Metrô e CPTM de São Paulo em tempo real",
-  "main": "index.js",
-  "type": "module",
+  "name": "metro-sp-api",
+  "version": "2.2.0",
+  "main": "getLineStatus.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
+    "start": "node getLineStatus.js"
   },
-  "keywords": [
-    "metro",
-    "sp",
-    "sao-paulo",
-    "cptm",
-    "transporte",
-    "api"
-  ],
-  "author": "Seu Nome",
-  "license": "MIT",
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "node-fetch": "^3.3.2",
-    "cheerio": "^1.0.0-rc.12"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+  ...
 }
+```
+
+### **Se NÃO tiver:**
+
+1. **Edite package.json** (clique no lápis ✏️)
+2. **Substitua TUDO** pelo conteúdo do arquivo **package-FINAL.json** que te mandei
+3. **Commit changes**
+
+---
+
+### **PASSO 2: Forçar novo deploy no Render**
+
+1. **Volte no Render**
+2. **Clique em "Manual Deploy"** (botão no canto direito)
+3. **Escolha "Deploy latest commit"**
+4. **Aguarde 2-3 minutos**
+
+---
+
+## 🔍 VERIFICAR LOGS DEPOIS:
+
+Depois do deploy, os logs devem mostrar:
+```
+✅ Build bem-sucedido
+✅ Instalando dependências...
+✅ Iniciando aplicação...
+🚀 API rodando na porta 3000
+📡 URL do Metrô: https://www.metro.sp.gov.br/direto-do-metro
+✅ Pronto para receber requisições!
+```
+
+---
+
+## 📋 CHECKLIST RÁPIDO:
+```
+☐ Verifiquei package.json no GitHub
+☐ Tem "main": "getLineStatus.js"?
+☐ Tem "start": "node getLineStatus.js"?
+☐ Se não, editei e fiz commit
+☐ Voltei no Render
+☐ Manual Deploy
+☐ Aguardei logs mostrarem sucesso
+☐ Testei /health
+☐ ✅ FUNCIONOU!
