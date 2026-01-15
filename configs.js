@@ -1,16 +1,15 @@
 // configs.js
 module.exports = {
-  // Página oficial "Direto do Metrô"
-  // Obs: essa página pode não ter o status no HTML (às vezes é só informativa)
-  METRO_URL: 'https://www.metro.sp.gov.br/sua-viagem/direto-metro/',
+  // Fonte oficial (CCM/ARTESP) - Status Metroferroviário (Metrô + CPTM + concessões)
+  CCM_STATUS_URL: "https://ccm.artesp.sp.gov.br/metroferroviario/status-linhas/",
 
-  // Cache (ms)
-  CACHE_DURATION: 60000, // 1 minuto
+  // Cache recomendado (30s ~ 60s)
+  CACHE_DURATION: 30000,
 
-  // Timeout da requisição
+  // Timeout de requisição
   REQUEST_TIMEOUT: 15000,
 
-  // User-Agent
+  // User-Agent (evita bloqueios simples)
   USER_AGENT:
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
 };
