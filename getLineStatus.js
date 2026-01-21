@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 
 // ============================
-// CACHE
+// CACHE (STATUS)
 // ============================
 let cache = {
   data: null,
@@ -19,12 +19,25 @@ let cache = {
   duration: config.CACHE_DURATION || 30000,
 };
 
+// ============================
+// CACHE (MOTIVOS) - separado
+// ============================
+let reasonCache = {
+  map: new Map(), // key normalizada -> { motivo, ocorridoEm, situacao }
+  timestamp: null,
+  duration: config.REASON_CACHE_DURATION || 45000, // 45s padrão
+};
+
 let lastDebug = {
   source: "CCM/ARTESP",
   lastUrl: null,
+  lastOccUrl: null,
   lastError: null,
+  lastOccError: null,
   lastAttemptAt: null,
+  lastOccAttemptAt: null,
   parsedCount: 0,
+  occParsedCount: 0,
 };
 
 // ============================
@@ -35,6 +48,14 @@ function normalizeText(str) {
     .replace(/\u00A0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normKey(str) {
+  return normalizeText(str)
+    .toLowerCase()
+    .replace(/[–—]/g, "-")
+    .replace(/\s*-\s*/g, "-")
+    .replace(/\s+/g, " ");
 }
 
 // 0 = normal | 1 = reduzida/parcial | 2 = encerrada | 3 = paralisada | 99 = desconhecido
@@ -121,7 +142,110 @@ function findBestContainer($, headingEl) {
 }
 
 // ============================
-// FETCH CCM/ARTESP
+// FETCH CCM/ARTESP - OCORRÊNCIAS (MOTIVO AO VIVO)
+// ============================
+function isReasonCacheValid() {
+  if (!reasonCache.timestamp) return false;
+  return Date.now() - reasonCache.timestamp < reasonCache.duration;
+}
+
+/**
+ * Pega a ocorrência mais recente por linha no CCM/ARTESP (ocorrências)
+ * e monta um Map: chave normalizada -> { motivo, ocorridoEm, situacao }
+ *
+ * Observação: isso NÃO é “histórico”. É só o último evento publicado.
+ */
+async function fetchCCMOcorrenciasLatest() {
+  const occUrl = String(config.CCM_OCCURRENCES_URL || "").trim();
+
+  // Se não configurar, simplesmente retorna vazio (não derruba a API)
+  if (!occUrl || (!occUrl.startsWith("http://") && !occUrl.startsWith("https://"))) {
+    return { url: occUrl || null, map: new Map(), parsed: 0 };
+  }
+
+  lastDebug.lastOccUrl = occUrl;
+  lastDebug.lastOccAttemptAt = new Date().toISOString();
+  lastDebug.lastOccError = null;
+
+  const html = (
+    await axios.get(occUrl, {
+      timeout: config.REQUEST_TIMEOUT || 15000,
+      headers: {
+        "User-Agent": config.USER_AGENT,
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    })
+  ).data;
+
+  const $ = cheerio.load(String(html));
+  const map = new Map();
+  let parsed = 0;
+
+  // Tenta capturar uma tabela padrão
+  const rows = $("table tbody tr");
+
+  rows.each((_, tr) => {
+    const tds = $(tr).find("td");
+    if (tds.length < 4) return;
+
+    const ocorridoEm = normalizeText($(tds[0]).text());
+    const linhaTxt = normalizeText($(tds[1]).text()); // ex: "Linha 9 - Esmeralda"
+    const situacao = normalizeText($(tds[3]).text());
+
+    if (!linhaTxt) return;
+
+    // Descrição às vezes fica em uma linha “detalhe” logo após o tr
+    let descricao = "";
+    const next = $(tr).next();
+    const nextTds = next.find("td");
+    const nextText = normalizeText(next.text());
+
+    // Heurística: detalhe costuma ser linha com poucas colunas e texto grande
+    if (nextText && nextText.length > 10 && nextTds.length <= 2) {
+      descricao = nextText;
+    }
+
+    // fallback: tenta extrair algo entre aspas (quando o layout coloca assim)
+    if (!descricao) {
+      const raw = normalizeText($(tr).text());
+      const m = raw.match(/"([^"]{8,})"/);
+      if (m) descricao = normalizeText(m[1]);
+    }
+
+    const key = normKey(linhaTxt); // normaliza
+    if (!map.has(key)) {
+      map.set(key, { motivo: descricao || "", ocorridoEm, situacao });
+      parsed += 1;
+    }
+  });
+
+  return { url: occUrl, map, parsed };
+}
+
+async function getReasonsMap() {
+  if (isReasonCacheValid() && reasonCache.map.size > 0) return { map: reasonCache.map, source: "cache" };
+
+  try {
+    const { url, map, parsed } = await fetchCCMOcorrenciasLatest();
+    reasonCache.map = map;
+    reasonCache.timestamp = Date.now();
+    lastDebug.occParsedCount = parsed;
+    return { map, source: url ? "CCM/ARTESP" : "disabled" };
+  } catch (err) {
+    lastDebug.lastOccError = err.message;
+
+    // fallback: usa cache anterior se existir
+    if (reasonCache.map && reasonCache.map.size > 0) {
+      return { map: reasonCache.map, source: "cache_fallback" };
+    }
+
+    return { map: new Map(), source: "error" };
+  }
+}
+
+// ============================
+// FETCH CCM/ARTESP - STATUS
 // ============================
 async function fetchCCMStatus() {
   const url = String(config.CCM_STATUS_URL || "").trim();
@@ -132,6 +256,9 @@ async function fetchCCMStatus() {
   lastDebug.lastUrl = url;
   lastDebug.lastAttemptAt = new Date().toISOString();
   lastDebug.lastError = null;
+
+  // pega mapa de motivos (ao vivo) uma vez
+  const reasons = await getReasonsMap();
 
   const html = (
     await axios.get(url, {
@@ -177,16 +304,46 @@ async function fetchCCMStatus() {
 
     if (!statusText) statusText = "Indisponível";
 
+    const code = statusToCode(statusText);
+    const isProblem = code !== 0;
+
+    // tenta casar com o mapa de ocorrências
+    let reason = "";
+    let reasonAt = "";
+    let reasonStatus = "";
+
+    if (isProblem && reasons.map && reasons.map.size > 0) {
+      const wanted1 = normKey(parsed.name); // "linha 9-esmeralda"
+      const wanted2 = normKey(`linha ${parsed.number}`); // "linha 9"
+
+      // procura chave que contenha o número da linha
+      for (const [k, v] of reasons.map.entries()) {
+        if (k.includes(wanted1) || k.includes(wanted2)) {
+          reason = v.motivo || "";
+          reasonAt = v.ocorridoEm || "";
+          reasonStatus = v.situacao || "";
+          break;
+        }
+      }
+    }
+
     lines.push({
       id: `linha-${parsed.number}-${parsed.color.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
       operator: operator || "Desconhecido",
       name: parsed.name,
       number: parsed.number,
       color: parsed.color,
-      statusCode: statusToCode(statusText),
+      statusCode: code,
       status: statusText,
       updatedInfo: info.updated || "",
       stationsCount: info.stationsCount,
+
+      // NOVO: MOTIVO AO VIVO (se houver falha)
+      reason: isProblem ? (reason || "Motivo não informado pela fonte oficial") : "",
+      reasonAt: isProblem ? (reasonAt || "") : "",
+      reasonStatus: isProblem ? (reasonStatus || "") : "",
+      reasonSource: isProblem ? String(config.CCM_OCCURRENCES_URL || "") : "",
+
       source: url,
       lastUpdate: new Date().toISOString(),
     });
@@ -213,7 +370,7 @@ async function fetchCCMStatus() {
 }
 
 // ============================
-// CACHE
+// CACHE STATUS
 // ============================
 function isCacheValid() {
   if (!cache.data || !cache.timestamp) return false;
@@ -272,7 +429,6 @@ app.get("/", async (req, res) => {
   }
 });
 
-// ✅ pra você não ver mais Not Found ao testar /api/status
 app.get("/api/status", async (req, res) => {
   try {
     const data = await getData();
@@ -290,6 +446,11 @@ app.get("/health", (req, res) => {
       hasData: cache.data !== null,
       isValid: isCacheValid(),
       lastCacheUpdate: cache.timestamp ? new Date(cache.timestamp).toISOString() : null,
+    },
+    reasonsCache: {
+      hasData: reasonCache.map && reasonCache.map.size > 0,
+      isValid: isReasonCacheValid(),
+      lastReasonsUpdate: reasonCache.timestamp ? new Date(reasonCache.timestamp).toISOString() : null,
     },
   });
 });
@@ -312,7 +473,9 @@ app.get("/debug", (req, res) => {
   res.json({
     config: {
       CCM_STATUS_URL: config.CCM_STATUS_URL,
+      CCM_OCCURRENCES_URL: config.CCM_OCCURRENCES_URL || null,
       CACHE_DURATION: cache.duration,
+      REASON_CACHE_DURATION: reasonCache.duration,
       REQUEST_TIMEOUT: config.REQUEST_TIMEOUT || 15000,
     },
     lastDebug,
