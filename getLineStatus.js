@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 
 // ============================
-// CACHE (STATUS)
+// CACHE
 // ============================
 let cache = {
   data: null,
@@ -19,26 +19,35 @@ let cache = {
   duration: config.CACHE_DURATION || 30000,
 };
 
-// ============================
-// CACHE (MOTIVOS) - separado
-// ============================
-let reasonCache = {
-  map: new Map(), // key normalizada -> { motivo, ocorridoEm, situacao }
-  timestamp: null,
-  duration: config.REASON_CACHE_DURATION || 45000, // 45s padrão
-};
-
 let lastDebug = {
   source: "CCM/ARTESP",
   lastUrl: null,
-  lastOccUrl: null,
   lastError: null,
-  lastOccError: null,
   lastAttemptAt: null,
-  lastOccAttemptAt: null,
   parsedCount: 0,
-  occParsedCount: 0,
 };
+
+// ============================
+// ✅ NOVO: ÚLTIMO STATUS VÁLIDO POR LINHA (fallback por linha)
+// ============================
+// Guarda o último status BOM de cada linha (ex: "4-Amarela") e quando o CCM vier
+// "Dados indisponíveis", usamos esse último status válido por um tempo (TTL).
+const LAST_GOOD_TTL_MS =
+  typeof config.LAST_GOOD_TTL_MS === "number" && config.LAST_GOOD_TTL_MS > 0
+    ? config.LAST_GOOD_TTL_MS
+    : 15 * 60 * 1000; // padrão: 15 minutos
+
+const lastGoodByLineKey = new Map();
+// Estrutura: key -> { line: <obj linha>, savedAt: epochMs }
+
+function makeLineKey(number, color) {
+  return `${String(number || "").trim()}-${String(color || "").trim().toLowerCase()}`;
+}
+
+function isLastGoodValid(entry) {
+  if (!entry || !entry.savedAt) return false;
+  return Date.now() - entry.savedAt <= LAST_GOOD_TTL_MS;
+}
 
 // ============================
 // HELPERS
@@ -50,12 +59,15 @@ function normalizeText(str) {
     .trim();
 }
 
-function normKey(str) {
-  return normalizeText(str)
-    .toLowerCase()
-    .replace(/[–—]/g, "-")
-    .replace(/\s*-\s*/g, "-")
-    .replace(/\s+/g, " ");
+// ✅ NOVO: detecta textos de indisponibilidade do CCM
+function isUnavailableStatusText(statusText) {
+  const t = normalizeText(statusText).toLowerCase();
+  // cobre "Indisponível", "Dados indisponíveis", variações etc.
+  if (!t) return true;
+  if (t.includes("indispon")) return true;
+  if (t.includes("dados indispon")) return true;
+  if (t === "-" || t === "n/a") return true;
+  return false;
 }
 
 // 0 = normal | 1 = reduzida/parcial | 2 = encerrada | 3 = paralisada | 99 = desconhecido
@@ -141,111 +153,13 @@ function findBestContainer($, headingEl) {
   return $(headingEl).parent();
 }
 
-// ============================
-// FETCH CCM/ARTESP - OCORRÊNCIAS (MOTIVO AO VIVO)
-// ============================
-function isReasonCacheValid() {
-  if (!reasonCache.timestamp) return false;
-  return Date.now() - reasonCache.timestamp < reasonCache.duration;
-}
-
-/**
- * Pega a ocorrência mais recente por linha no CCM/ARTESP (ocorrências)
- * e monta um Map: chave normalizada -> { motivo, ocorridoEm, situacao }
- *
- * Observação: isso NÃO é “histórico”. É só o último evento publicado.
- */
-async function fetchCCMOcorrenciasLatest() {
-  const occUrl = String(config.CCM_OCCURRENCES_URL || "").trim();
-
-  // Se não configurar, simplesmente retorna vazio (não derruba a API)
-  if (!occUrl || (!occUrl.startsWith("http://") && !occUrl.startsWith("https://"))) {
-    return { url: occUrl || null, map: new Map(), parsed: 0 };
-  }
-
-  lastDebug.lastOccUrl = occUrl;
-  lastDebug.lastOccAttemptAt = new Date().toISOString();
-  lastDebug.lastOccError = null;
-
-  const html = (
-    await axios.get(occUrl, {
-      timeout: config.REQUEST_TIMEOUT || 15000,
-      headers: {
-        "User-Agent": config.USER_AGENT,
-        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-    })
-  ).data;
-
-  const $ = cheerio.load(String(html));
-  const map = new Map();
-  let parsed = 0;
-
-  // Tenta capturar uma tabela padrão
-  const rows = $("table tbody tr");
-
-  rows.each((_, tr) => {
-    const tds = $(tr).find("td");
-    if (tds.length < 4) return;
-
-    const ocorridoEm = normalizeText($(tds[0]).text());
-    const linhaTxt = normalizeText($(tds[1]).text()); // ex: "Linha 9 - Esmeralda"
-    const situacao = normalizeText($(tds[3]).text());
-
-    if (!linhaTxt) return;
-
-    // Descrição às vezes fica em uma linha “detalhe” logo após o tr
-    let descricao = "";
-    const next = $(tr).next();
-    const nextTds = next.find("td");
-    const nextText = normalizeText(next.text());
-
-    // Heurística: detalhe costuma ser linha com poucas colunas e texto grande
-    if (nextText && nextText.length > 10 && nextTds.length <= 2) {
-      descricao = nextText;
-    }
-
-    // fallback: tenta extrair algo entre aspas (quando o layout coloca assim)
-    if (!descricao) {
-      const raw = normalizeText($(tr).text());
-      const m = raw.match(/"([^"]{8,})"/);
-      if (m) descricao = normalizeText(m[1]);
-    }
-
-    const key = normKey(linhaTxt); // normaliza
-    if (!map.has(key)) {
-      map.set(key, { motivo: descricao || "", ocorridoEm, situacao });
-      parsed += 1;
-    }
-  });
-
-  return { url: occUrl, map, parsed };
-}
-
-async function getReasonsMap() {
-  if (isReasonCacheValid() && reasonCache.map.size > 0) return { map: reasonCache.map, source: "cache" };
-
-  try {
-    const { url, map, parsed } = await fetchCCMOcorrenciasLatest();
-    reasonCache.map = map;
-    reasonCache.timestamp = Date.now();
-    lastDebug.occParsedCount = parsed;
-    return { map, source: url ? "CCM/ARTESP" : "disabled" };
-  } catch (err) {
-    lastDebug.lastOccError = err.message;
-
-    // fallback: usa cache anterior se existir
-    if (reasonCache.map && reasonCache.map.size > 0) {
-      return { map: reasonCache.map, source: "cache_fallback" };
-    }
-
-    return { map: new Map(), source: "error" };
-  }
+// ✅ NOVO: clone seguro (pra não ficar mutando referência do lastGood)
+function deepClone(obj) {
+  return JSON.parse(JSON.stringify(obj));
 }
 
 // ============================
-// FETCH CCM/ARTESP - STATUS
+// FETCH CCM/ARTESP
 // ============================
 async function fetchCCMStatus() {
   const url = String(config.CCM_STATUS_URL || "").trim();
@@ -256,9 +170,6 @@ async function fetchCCMStatus() {
   lastDebug.lastUrl = url;
   lastDebug.lastAttemptAt = new Date().toISOString();
   lastDebug.lastError = null;
-
-  // pega mapa de motivos (ao vivo) uma vez
-  const reasons = await getReasonsMap();
 
   const html = (
     await axios.get(url, {
@@ -297,56 +208,74 @@ async function fetchCCMStatus() {
     let statusText = info.status;
     if (!statusText) {
       const ms2 = containerText.match(
-        /(Operaç[aã]o\s+(Normal|Parcial|Paralisada|Encerrada)|Velocidade\s+Reduzida|Atividade\s+Programada|Maiores\s+Intervalos)/i
+        /(Operaç[aã]o\s+(Normal|Parcial|Paralisada|Encerrada)|Velocidade\s+Reduzida|Atividade\s+Programada|Maiores\s+Intervalos|Dados\s+Indispon[ií]veis)/i
       );
       if (ms2) statusText = normalizeText(ms2[0]);
     }
 
     if (!statusText) statusText = "Indisponível";
 
-    const code = statusToCode(statusText);
-    const isProblem = code !== 0;
+    // ============================
+    // ✅ NOVO: fallback por linha (último status válido)
+    // ============================
+    const lineKey = makeLineKey(parsed.number, parsed.color);
+    const rawStatusText = statusText; // guardamos o que veio do CCM
+    let finalStatusText = statusText;
+    let dataQuality = "live";
+    let note = "";
 
-    // tenta casar com o mapa de ocorrências
-    let reason = "";
-    let reasonAt = "";
-    let reasonStatus = "";
+    // Se CCM veio indisponível para ESTA linha, tenta usar último bom
+    if (isUnavailableStatusText(statusText)) {
+      const lastGoodEntry = lastGoodByLineKey.get(lineKey);
+      if (isLastGoodValid(lastGoodEntry)) {
+        const lg = lastGoodEntry.line;
 
-    if (isProblem && reasons.map && reasons.map.size > 0) {
-      const wanted1 = normKey(parsed.name); // "linha 9-esmeralda"
-      const wanted2 = normKey(`linha ${parsed.number}`); // "linha 9"
+        // mantém o último status bom (sem mudar o resto do contrato)
+        finalStatusText = lg.status;
+        dataQuality = "fallback_last_good";
+        note = "CCM retornou dados indisponíveis; exibindo última info válida";
 
-      // procura chave que contenha o número da linha
-      for (const [k, v] of reasons.map.entries()) {
-        if (k.includes(wanted1) || k.includes(wanted2)) {
-          reason = v.motivo || "";
-          reasonAt = v.ocorridoEm || "";
-          reasonStatus = v.situacao || "";
-          break;
+        // mantém updatedInfo do CCM se existir (às vezes o CCM ainda mostra atualização),
+        // mas se vier vazio, usamos o updatedInfo do last good.
+        if (!info.updated) {
+          info.updated = lg.updatedInfo || "";
         }
+      } else {
+        dataQuality = "unavailable";
+        note = "CCM retornou dados indisponíveis";
       }
     }
 
-    lines.push({
+    const lineObj = {
       id: `linha-${parsed.number}-${parsed.color.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
       operator: operator || "Desconhecido",
       name: parsed.name,
       number: parsed.number,
       color: parsed.color,
-      statusCode: code,
-      status: statusText,
+
+      // mantém os campos existentes, só melhorando o valor quando necessário
+      statusCode: statusToCode(finalStatusText),
+      status: finalStatusText,
       updatedInfo: info.updated || "",
       stationsCount: info.stationsCount,
-
-      // NOVO: MOTIVO AO VIVO (se houver falha)
-      reason: isProblem ? (reason || "Motivo não informado pela fonte oficial") : "",
-      reasonAt: isProblem ? (reasonAt || "") : "",
-      reasonStatus: isProblem ? (reasonStatus || "") : "",
-      reasonSource: isProblem ? String(config.CCM_OCCURRENCES_URL || "") : "",
-
       source: url,
       lastUpdate: new Date().toISOString(),
-    });
+
+      // ✅ NOVOS CAMPOS (não quebram nada, só ajudam o front)
+      dataQuality, // "live" | "fallback_last_good" | "unavailable"
+      note,        // aviso pequeno (pra mostrar no card)
+      rawStatus: rawStatusText, // o que veio do CCM (pra debug/transparência)
+    };
+
+    // Se o status final NÃO é indisponível, salva como "último bom"
+    if (!isUnavailableStatusText(lineObj.status)) {
+      lastGoodByLineKey.set(lineKey, {
+        line: deepClone(lineObj),
+        savedAt: Date.now(),
+      });
+    }
+
+    lines.push(lineObj);
   }
 
   // remove duplicados
@@ -370,7 +299,7 @@ async function fetchCCMStatus() {
 }
 
 // ============================
-// CACHE STATUS
+// CACHE
 // ============================
 function isCacheValid() {
   if (!cache.data || !cache.timestamp) return false;
@@ -398,6 +327,11 @@ async function getData() {
       lines,
       lastUpdate: new Date().toISOString(),
       cached: false,
+
+      // ✅ NOVO: metadado útil pro front saber que existe fallback por linha
+      meta: {
+        lastGoodTtlMs: LAST_GOOD_TTL_MS,
+      },
     };
   } catch (err) {
     lastDebug.lastError = err.message;
@@ -410,6 +344,10 @@ async function getData() {
         cached: true,
         warning: "Falha ao atualizar agora, retornando cache antigo",
         error: err.message,
+
+        meta: {
+          lastGoodTtlMs: LAST_GOOD_TTL_MS,
+        },
       };
     }
 
@@ -429,6 +367,7 @@ app.get("/", async (req, res) => {
   }
 });
 
+// ✅ pra você não ver mais Not Found ao testar /api/status
 app.get("/api/status", async (req, res) => {
   try {
     const data = await getData();
@@ -447,10 +386,11 @@ app.get("/health", (req, res) => {
       isValid: isCacheValid(),
       lastCacheUpdate: cache.timestamp ? new Date(cache.timestamp).toISOString() : null,
     },
-    reasonsCache: {
-      hasData: reasonCache.map && reasonCache.map.size > 0,
-      isValid: isReasonCacheValid(),
-      lastReasonsUpdate: reasonCache.timestamp ? new Date(reasonCache.timestamp).toISOString() : null,
+
+    // ✅ NOVO: mostra se já existem "last good" guardados
+    lastGood: {
+      ttlMs: LAST_GOOD_TTL_MS,
+      count: lastGoodByLineKey.size,
     },
   });
 });
@@ -473,12 +413,14 @@ app.get("/debug", (req, res) => {
   res.json({
     config: {
       CCM_STATUS_URL: config.CCM_STATUS_URL,
-      CCM_OCCURRENCES_URL: config.CCM_OCCURRENCES_URL || null,
       CACHE_DURATION: cache.duration,
-      REASON_CACHE_DURATION: reasonCache.duration,
       REQUEST_TIMEOUT: config.REQUEST_TIMEOUT || 15000,
+      LAST_GOOD_TTL_MS,
     },
     lastDebug,
+
+    // ✅ NOVO: chaves guardadas (pra você conferir se está salvando por linha)
+    lastGoodKeys: Array.from(lastGoodByLineKey.keys()),
   });
 });
 
