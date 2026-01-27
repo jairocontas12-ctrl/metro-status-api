@@ -4,15 +4,17 @@ const cheerio = require("cheerio");
 const cors = require("cors");
 const config = require("./configs");
 
-// ✅ PUSH (NOVO - mas não muda o resto)
+// ✅ PUSH
 const webpush = require("web-push");
 const { LocalStorage } = require("node-localstorage");
 
-// ✅ No Render, /tmp é o melhor lugar (evita erro de permissão)
-const localStorage = new LocalStorage("/tmp/subs_db");
+// ✅ Render: se você criar Disk e setar DATA_DIR=/var/data, fica persistente.
+// Se não setar, continua usando /tmp (não quebra nada).
+const SUBS_PATH = process.env.DATA_DIR || "/tmp";
+const localStorage = new LocalStorage(`${SUBS_PATH}/subs_db`);
 
 // ========================================================
-// ✅ COLE SUAS CHAVES VAPID AQUI
+// ✅ CHAVES VAPID (via env no Render)
 // ========================================================
 const PUBLIC_VAPID_KEY = process.env.VAPID_PUBLIC_KEY || "COLE_SUA_PUBLIC_KEY_AQUI";
 const PRIVATE_VAPID_KEY = process.env.VAPID_PRIVATE_KEY || "COLE_SUA_PRIVATE_KEY_AQUI";
@@ -453,6 +455,21 @@ async function getData() {
 }
 
 // ============================
+// PUSH: helpers (NOVO)
+// ============================
+function saveSubscription(subscription) {
+  if (!subscription || !subscription.endpoint) return false;
+  localStorage.setItem(subscription.endpoint, JSON.stringify(subscription));
+  return true;
+}
+
+function removeSubscription(endpoint) {
+  if (!endpoint) return false;
+  localStorage.removeItem(endpoint);
+  return true;
+}
+
+// ============================
 // ROTAS
 // ============================
 app.get("/", async (req, res) => {
@@ -470,6 +487,35 @@ app.get("/api/status", async (req, res) => {
     res.json(data);
   } catch (error) {
     res.status(500).json({ error: "Erro ao buscar dados", message: error.message });
+  }
+});
+
+// ✅ NOVO: chave pública pro frontend
+app.get("/api/vapid-public-key", (req, res) => {
+  return res.json({ publicKey: PUBLIC_VAPID_KEY });
+});
+
+// ✅ NOVO: rota padrão subscribe
+app.post("/api/subscribe", (req, res) => {
+  try {
+    const ok = saveSubscription(req.body);
+    if (!ok) return res.status(400).json({ error: "Subscription inválida" });
+    return res.status(201).json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: "Falha ao salvar inscrição", message: e.message });
+  }
+});
+
+// ✅ NOVO: unsubscribe
+app.post("/api/unsubscribe", (req, res) => {
+  try {
+    const endpoint = req.body?.endpoint;
+    if (!endpoint) return res.status(400).json({ error: "endpoint obrigatório" });
+
+    removeSubscription(endpoint);
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: "Falha ao remover inscrição", message: e.message });
   }
 });
 
@@ -526,17 +572,12 @@ app.get("/debug", (req, res) => {
 });
 
 // ============================
-// PUSH: inscrição
+// PUSH: inscrição (mantida /subscribe)
 // ============================
 app.post("/subscribe", (req, res) => {
   try {
-    const subscription = req.body;
-
-    if (!subscription || !subscription.endpoint) {
-      return res.status(400).json({ error: "Subscription inválida" });
-    }
-
-    localStorage.setItem(subscription.endpoint, JSON.stringify(subscription));
+    const ok = saveSubscription(req.body);
+    if (!ok) return res.status(400).json({ error: "Subscription inválida" });
     return res.status(201).json({ ok: true });
   } catch (e) {
     return res.status(500).json({ error: "Falha ao salvar inscrição", message: e.message });
@@ -552,7 +593,7 @@ async function notifyAll(payload) {
   // Se VAPID não está pronto, não tenta enviar
   if (!vapidReady) return;
 
-  // Loop seguro (não usa _keys)
+  // Loop seguro
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
 
@@ -600,6 +641,7 @@ async function checkStatusAndNotify() {
             title: `Linha ${num}: ${status}`,
             body: line.reason ? String(line.reason) : "Toque para ver detalhes no site.",
             icon: "https://cdn-icons-png.flaticon.com/512/565/565422.png",
+            url: process.env.PUSH_CLICK_URL || "https://SEU-SITE-AQUI.com"
           });
 
           await notifyAll(payload);
@@ -618,5 +660,5 @@ setInterval(checkStatusAndNotify, 60000);
 
 app.listen(PORT, () => {
   console.log("API rodando na porta " + PORT);
-  console.log("Rotas: / | /api/status | /subscribe | /health | /stats | /debug");
+  console.log("Rotas: / | /api/status | /subscribe | /api/subscribe | /api/unsubscribe | /api/vapid-public-key | /health | /stats | /debug");
 });
