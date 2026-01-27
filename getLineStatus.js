@@ -1,10 +1,35 @@
-getLineStatus.js
-
 const express = require("express");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const cors = require("cors");
 const config = require("./configs");
+
+// ✅ PUSH (NOVO - mas não muda o resto)
+const webpush = require("web-push");
+const { LocalStorage } = require("node-localstorage");
+
+// ✅ No Render, /tmp é o melhor lugar (evita erro de permissão)
+const localStorage = new LocalStorage("/tmp/subs_db");
+
+// ========================================================
+// ✅ COLE SUAS CHAVES VAPID AQUI
+// ========================================================
+const PUBLIC_VAPID_KEY = process.env.VAPID_PUBLIC_KEY || "COLE_SUA_PUBLIC_KEY_AQUI";
+const PRIVATE_VAPID_KEY = process.env.VAPID_PRIVATE_KEY || "COLE_SUA_PRIVATE_KEY_AQUI";
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:seu-email@exemplo.com";
+
+// Se você ainda não colou as chaves, não quebra a API inteira;
+// só desativa push até você configurar.
+const vapidReady =
+  PUBLIC_VAPID_KEY && PRIVATE_VAPID_KEY &&
+  !PUBLIC_VAPID_KEY.includes("COLE_SUA_PUBLIC_KEY") &&
+  !PRIVATE_VAPID_KEY.includes("COLE_SUA_PRIVATE_KEY");
+
+if (vapidReady) {
+  webpush.setVapidDetails(VAPID_SUBJECT, PUBLIC_VAPID_KEY, PRIVATE_VAPID_KEY);
+} else {
+  console.warn("⚠️ Push desativado: configure VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY (ou cole no código).");
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,11 +52,11 @@ let lastDebug = {
   lastError: null,
   lastAttemptAt: null,
   parsedCount: 0,
-  occurrencesParsed: 0, // ✅ NOVO
+  occurrencesParsed: 0,
 };
 
 // ============================
-// ✅ NOVO: ÚLTIMO STATUS VÁLIDO POR LINHA (fallback por linha)
+// ✅ ÚLTIMO STATUS VÁLIDO POR LINHA (fallback por linha)
 // ============================
 const LAST_GOOD_TTL_MS =
   typeof config.LAST_GOOD_TTL_MS === "number" && config.LAST_GOOD_TTL_MS > 0
@@ -92,6 +117,7 @@ function statusToCode(statusText) {
   return 99;
 }
 
+// "Linha 10 - Turquesa" ou "Linha 10-Turquesa"
 function parseLineHeader(text) {
   const t = normalizeText(text);
   const m = t.match(/^Linha\s*(\d{1,2})\s*[-–]\s*(.+)$/i);
@@ -151,55 +177,60 @@ function deepClone(obj) {
 }
 
 // ============================
-// ✅ NOVO: BUSCAR OCORRÊNCIAS (MOTIVO)
+// ✅ BUSCAR OCORRÊNCIAS (MOTIVO)
 // ============================
 function parseDateTime(text) {
   const m = text.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/);
   if (!m) return "";
-  
+
   const [, dd, mm, yyyy, HH, MM] = m;
   const date = new Date(+yyyy, +mm - 1, +dd, +HH, +MM);
-  
   return date.toISOString();
 }
 
 async function fetchCCMOccurrences() {
   const url = config.CCM_OCCURRENCES_URL || "";
-  
+
   if (!url.startsWith("http")) {
     return new Map();
   }
 
   try {
-    const html = (await axios.get(url, {
-      timeout: config.REQUEST_TIMEOUT || 15000,
-      headers: {
-        "User-Agent": config.USER_AGENT,
-        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-    })).data;
+    const html = (
+      await axios.get(url, {
+        timeout: config.REQUEST_TIMEOUT || 15000,
+        headers: {
+          "User-Agent": config.USER_AGENT,
+          "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+      })
+    ).data;
 
     const $ = cheerio.load(String(html));
     const occMap = new Map();
 
     const bodyText = $("body").text();
-    const lines = bodyText.split("\n").map(l => normalizeText(l)).filter(Boolean);
+    const lines = bodyText
+      .split("\n")
+      .map((l) => normalizeText(l))
+      .filter(Boolean);
 
-    const rowRegex = /^(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2})\s+Linha\s+(\d{1,2})\s*[-–]\s*([^\s]+.*?)\s+(Operação\s+Normal|Operação\s+Parcial|Velocidade\s+Reduzida|Atividade\s+Programada|Operação\s+Encerrada|Dados\s+Indisponíveis|Operação\s+Diferenciada)/i;
+    const rowRegex =
+      /^(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2})\s+Linha\s+(\d{1,2})\s*[-–]\s*([^\s]+.*?)\s+(Operação\s+Normal|Operação\s+Parcial|Velocidade\s+Reduzida|Atividade\s+Programada|Operação\s+Encerrada|Dados\s+Indisponíveis|Operação\s+Diferenciada)/i;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const match = line.match(rowRegex);
-      
       if (!match) continue;
 
       const [, dateTime, number, , status] = match;
-      
+
       const nextLine = lines[i + 1] || "";
-      const reason = nextLine.startsWith('"') && nextLine.endsWith('"') 
-        ? normalizeText(nextLine.replace(/^"|"$/g, ""))
-        : "";
+      const reason =
+        nextLine.startsWith('"') && nextLine.endsWith('"')
+          ? normalizeText(nextLine.replace(/^"|"$/g, ""))
+          : "";
 
       if (status.toLowerCase().includes("encerrada")) continue;
 
@@ -214,7 +245,6 @@ async function fetchCCMOccurrences() {
     }
 
     return occMap;
-
   } catch (e) {
     console.error("❌ Erro ao buscar ocorrências:", e.message);
     return new Map();
@@ -234,7 +264,7 @@ async function fetchCCMStatus() {
   lastDebug.lastAttemptAt = new Date().toISOString();
   lastDebug.lastError = null;
 
-  // ✅ NOVO: Busca ocorrências em paralelo
+  // Busca ocorrências
   let occurrencesMap = new Map();
   try {
     occurrencesMap = await fetchCCMOccurrences();
@@ -312,7 +342,7 @@ async function fetchCCMStatus() {
       }
     }
 
-    // ✅ NOVO: Busca ocorrência pelo número da linha
+    // Ocorrência por número
     const occ = occurrencesMap.get(parsed.number) || {};
     const reason = occ.reason || "";
     const reasonAt = occ.reasonAt ? parseDateTime(occ.reasonAt) : "";
@@ -336,12 +366,11 @@ async function fetchCCMStatus() {
       dataQuality,
       note,
       rawStatus: rawStatusText,
-      
-      // ✅ NOVOS CAMPOS (OCORRÊNCIAS)
-      reason: reason,
-      reasonAt: reasonAt,
-      reasonStatus: reasonStatus,
-      reasonSource: reasonSource,
+
+      reason,
+      reasonAt,
+      reasonStatus,
+      reasonSource,
     };
 
     if (!isUnavailableStatusText(lineObj.status)) {
@@ -402,10 +431,7 @@ async function getData() {
       lines,
       lastUpdate: new Date().toISOString(),
       cached: false,
-
-      meta: {
-        lastGoodTtlMs: LAST_GOOD_TTL_MS,
-      },
+      meta: { lastGoodTtlMs: LAST_GOOD_TTL_MS },
     };
   } catch (err) {
     lastDebug.lastError = err.message;
@@ -418,10 +444,7 @@ async function getData() {
         cached: true,
         warning: "Falha ao atualizar agora, retornando cache antigo",
         error: err.message,
-
-        meta: {
-          lastGoodTtlMs: LAST_GOOD_TTL_MS,
-        },
+        meta: { lastGoodTtlMs: LAST_GOOD_TTL_MS },
       };
     }
 
@@ -459,10 +482,13 @@ app.get("/health", (req, res) => {
       isValid: isCacheValid(),
       lastCacheUpdate: cache.timestamp ? new Date(cache.timestamp).toISOString() : null,
     },
-
     lastGood: {
       ttlMs: LAST_GOOD_TTL_MS,
       count: lastGoodByLineKey.size,
+    },
+    push: {
+      vapidReady,
+      subscribers: localStorage.length,
     },
   });
 });
@@ -485,18 +511,112 @@ app.get("/debug", (req, res) => {
   res.json({
     config: {
       CCM_STATUS_URL: config.CCM_STATUS_URL,
-      CCM_OCCURRENCES_URL: config.CCM_OCCURRENCES_URL, // ✅ NOVO
+      CCM_OCCURRENCES_URL: config.CCM_OCCURRENCES_URL,
       CACHE_DURATION: cache.duration,
       REQUEST_TIMEOUT: config.REQUEST_TIMEOUT || 15000,
       LAST_GOOD_TTL_MS,
     },
     lastDebug,
-
     lastGoodKeys: Array.from(lastGoodByLineKey.keys()),
+    push: {
+      vapidReady,
+      subscribers: localStorage.length,
+    },
   });
 });
 
+// ============================
+// PUSH: inscrição
+// ============================
+app.post("/subscribe", (req, res) => {
+  try {
+    const subscription = req.body;
+
+    if (!subscription || !subscription.endpoint) {
+      return res.status(400).json({ error: "Subscription inválida" });
+    }
+
+    localStorage.setItem(subscription.endpoint, JSON.stringify(subscription));
+    return res.status(201).json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: "Falha ao salvar inscrição", message: e.message });
+  }
+});
+
+// ============================
+// ROBÔ DE NOTIFICAÇÃO (a cada 60s)
+// ============================
+let pushMemory = {};
+
+async function notifyAll(payload) {
+  // Se VAPID não está pronto, não tenta enviar
+  if (!vapidReady) return;
+
+  // Loop seguro (não usa _keys)
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+
+    try {
+      const sub = JSON.parse(localStorage.getItem(key));
+
+      await webpush.sendNotification(sub, payload).catch((e) => {
+        // Se expirou/invalidou, remove
+        if (e.statusCode === 410 || e.statusCode === 404) {
+          localStorage.removeItem(key);
+        }
+      });
+    } catch (e) {
+      // dado quebrado -> remove
+      localStorage.removeItem(key);
+    }
+  }
+}
+
+async function checkStatusAndNotify() {
+  try {
+    const data = await getData();
+    const lines = Array.isArray(data.lines) ? data.lines : [];
+
+    for (const line of lines) {
+      const num = String(line.number || "").trim();
+      const status = String(line.status || "").trim();
+
+      if (!num) continue;
+
+      if (!pushMemory[num]) {
+        pushMemory[num] = status;
+        continue;
+      }
+
+      if (pushMemory[num] !== status) {
+        const oldCode = statusToCode(pushMemory[num]);
+        const newCode = statusToCode(status);
+
+        // ✅ Notifica quando muda e envolve ocorrência (saiu do normal ou voltou ao normal)
+        const shouldNotify = (oldCode !== newCode) && (oldCode !== 0 || newCode !== 0);
+
+        if (shouldNotify) {
+          const payload = JSON.stringify({
+            title: `Linha ${num}: ${status}`,
+            body: line.reason ? String(line.reason) : "Toque para ver detalhes no site.",
+            icon: "https://cdn-icons-png.flaticon.com/512/565/565422.png",
+          });
+
+          await notifyAll(payload);
+          console.log(`🔔 Push enviado: Linha ${num} mudou para ${status}`);
+        }
+
+        pushMemory[num] = status;
+      }
+    }
+  } catch (e) {
+    console.error("Erro no robô de notificação:", e.message);
+  }
+}
+
+setInterval(checkStatusAndNotify, 60000);
+
 app.listen(PORT, () => {
   console.log("API rodando na porta " + PORT);
-  console.log("Rotas: / | /api/status | /health | /stats | /debug");
+  console.log("Rotas: / | /api/status | /subscribe | /health | /stats | /debug");
 });
