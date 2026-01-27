@@ -1,5 +1,3 @@
-package.json
-
 {
   "name": "metro-sp-api",
   "version": "2.2.0",
@@ -23,7 +21,9 @@ package.json
     "axios": "^1.6.2",
     "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.5",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "node-localstorage": "^3.0.5",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
