@@ -25,20 +25,18 @@ let lastDebug = {
   lastError: null,
   lastAttemptAt: null,
   parsedCount: 0,
+  occurrencesParsed: 0, // ✅ NOVO
 };
 
 // ============================
 // ✅ NOVO: ÚLTIMO STATUS VÁLIDO POR LINHA (fallback por linha)
 // ============================
-// Guarda o último status BOM de cada linha (ex: "4-Amarela") e quando o CCM vier
-// "Dados indisponíveis", usamos esse último status válido por um tempo (TTL).
 const LAST_GOOD_TTL_MS =
   typeof config.LAST_GOOD_TTL_MS === "number" && config.LAST_GOOD_TTL_MS > 0
     ? config.LAST_GOOD_TTL_MS
-    : 15 * 60 * 1000; // padrão: 15 minutos
+    : 15 * 60 * 1000;
 
 const lastGoodByLineKey = new Map();
-// Estrutura: key -> { line: <obj linha>, savedAt: epochMs }
 
 function makeLineKey(number, color) {
   return `${String(number || "").trim()}-${String(color || "").trim().toLowerCase()}`;
@@ -59,10 +57,8 @@ function normalizeText(str) {
     .trim();
 }
 
-// ✅ NOVO: detecta textos de indisponibilidade do CCM
 function isUnavailableStatusText(statusText) {
   const t = normalizeText(statusText).toLowerCase();
-  // cobre "Indisponível", "Dados indisponíveis", variações etc.
   if (!t) return true;
   if (t.includes("indispon")) return true;
   if (t.includes("dados indispon")) return true;
@@ -70,7 +66,6 @@ function isUnavailableStatusText(statusText) {
   return false;
 }
 
-// 0 = normal | 1 = reduzida/parcial | 2 = encerrada | 3 = paralisada | 99 = desconhecido
 function statusToCode(statusText) {
   const t = normalizeText(statusText).toLowerCase();
 
@@ -81,7 +76,7 @@ function statusToCode(statusText) {
     t.includes("parcial") ||
     t.includes("programada") ||
     t.includes("maiores intervalos") ||
-    t.includes("aten") // atenção/atencao
+    t.includes("aten")
   ) {
     return 1;
   }
@@ -95,7 +90,6 @@ function statusToCode(statusText) {
   return 99;
 }
 
-// "Linha 10 - Turquesa" ou "Linha 10-Turquesa"
 function parseLineHeader(text) {
   const t = normalizeText(text);
   const m = t.match(/^Linha\s*(\d{1,2})\s*[-–]\s*(.+)$/i);
@@ -109,11 +103,9 @@ function parseLineHeader(text) {
 }
 
 function tryFindOperator($, headingEl) {
-  // tenta achar um H2 acima como "Metrô", "CPTM", "ViaMobilidade", etc
   let op = normalizeText($(headingEl).prevAll("h2").first().text());
   if (op) return op;
 
-  // fallback: procura dentro de um container
   const section = $(headingEl).closest("section, article, div");
   op = normalizeText(section.find("h2").first().text());
   return op || "";
@@ -138,7 +130,6 @@ function extractInfoFromContainer(textBlock) {
 }
 
 function findBestContainer($, headingEl) {
-  // sobe alguns níveis procurando um bloco que contenha "Situação:" ou "Atualizado"
   let cur = $(headingEl);
   for (let i = 0; i < 7; i++) {
     const parent = cur.parent();
@@ -153,9 +144,79 @@ function findBestContainer($, headingEl) {
   return $(headingEl).parent();
 }
 
-// ✅ NOVO: clone seguro (pra não ficar mutando referência do lastGood)
 function deepClone(obj) {
   return JSON.parse(JSON.stringify(obj));
+}
+
+// ============================
+// ✅ NOVO: BUSCAR OCORRÊNCIAS (MOTIVO)
+// ============================
+function parseDateTime(text) {
+  const m = text.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/);
+  if (!m) return "";
+  
+  const [, dd, mm, yyyy, HH, MM] = m;
+  const date = new Date(+yyyy, +mm - 1, +dd, +HH, +MM);
+  
+  return date.toISOString();
+}
+
+async function fetchCCMOccurrences() {
+  const url = config.CCM_OCCURRENCES_URL || "";
+  
+  if (!url.startsWith("http")) {
+    return new Map();
+  }
+
+  try {
+    const html = (await axios.get(url, {
+      timeout: config.REQUEST_TIMEOUT || 15000,
+      headers: {
+        "User-Agent": config.USER_AGENT,
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    })).data;
+
+    const $ = cheerio.load(String(html));
+    const occMap = new Map();
+
+    const bodyText = $("body").text();
+    const lines = bodyText.split("\n").map(l => normalizeText(l)).filter(Boolean);
+
+    const rowRegex = /^(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2})\s+Linha\s+(\d{1,2})\s*[-–]\s*([^\s]+.*?)\s+(Operação\s+Normal|Operação\s+Parcial|Velocidade\s+Reduzida|Atividade\s+Programada|Operação\s+Encerrada|Dados\s+Indisponíveis|Operação\s+Diferenciada)/i;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const match = line.match(rowRegex);
+      
+      if (!match) continue;
+
+      const [, dateTime, number, , status] = match;
+      
+      const nextLine = lines[i + 1] || "";
+      const reason = nextLine.startsWith('"') && nextLine.endsWith('"') 
+        ? normalizeText(nextLine.replace(/^"|"$/g, ""))
+        : "";
+
+      if (status.toLowerCase().includes("encerrada")) continue;
+
+      if (!occMap.has(number)) {
+        occMap.set(number, {
+          reason: reason || "",
+          reasonAt: dateTime || "",
+          reasonStatus: status || "",
+          reasonSource: url,
+        });
+      }
+    }
+
+    return occMap;
+
+  } catch (e) {
+    console.error("❌ Erro ao buscar ocorrências:", e.message);
+    return new Map();
+  }
 }
 
 // ============================
@@ -171,6 +232,15 @@ async function fetchCCMStatus() {
   lastDebug.lastAttemptAt = new Date().toISOString();
   lastDebug.lastError = null;
 
+  // ✅ NOVO: Busca ocorrências em paralelo
+  let occurrencesMap = new Map();
+  try {
+    occurrencesMap = await fetchCCMOccurrences();
+    lastDebug.occurrencesParsed = occurrencesMap.size;
+  } catch (e) {
+    lastDebug.occurrencesParsed = 0;
+  }
+
   const html = (
     await axios.get(url, {
       timeout: config.REQUEST_TIMEOUT || 15000,
@@ -184,7 +254,6 @@ async function fetchCCMStatus() {
 
   const $ = cheerio.load(String(html));
 
-  // procura headings do tipo "Linha X - Cor"
   const headingEls = [];
   $("h1, h2, h3, h4, h5, strong").each((_, el) => {
     const t = normalizeText($(el).text());
@@ -204,7 +273,6 @@ async function fetchCCMStatus() {
 
     const info = extractInfoFromContainer(containerText);
 
-    // se não achou "Situação:", tenta achar palavras importantes dentro do bloco
     let statusText = info.status;
     if (!statusText) {
       const ms2 = containerText.match(
@@ -216,27 +284,23 @@ async function fetchCCMStatus() {
     if (!statusText) statusText = "Indisponível";
 
     // ============================
-    // ✅ NOVO: fallback por linha (último status válido)
+    // FALLBACK POR LINHA
     // ============================
     const lineKey = makeLineKey(parsed.number, parsed.color);
-    const rawStatusText = statusText; // guardamos o que veio do CCM
+    const rawStatusText = statusText;
     let finalStatusText = statusText;
     let dataQuality = "live";
     let note = "";
 
-    // Se CCM veio indisponível para ESTA linha, tenta usar último bom
     if (isUnavailableStatusText(statusText)) {
       const lastGoodEntry = lastGoodByLineKey.get(lineKey);
       if (isLastGoodValid(lastGoodEntry)) {
         const lg = lastGoodEntry.line;
 
-        // mantém o último status bom (sem mudar o resto do contrato)
         finalStatusText = lg.status;
         dataQuality = "fallback_last_good";
         note = "CCM retornou dados indisponíveis; exibindo última info válida";
 
-        // mantém updatedInfo do CCM se existir (às vezes o CCM ainda mostra atualização),
-        // mas se vier vazio, usamos o updatedInfo do last good.
         if (!info.updated) {
           info.updated = lg.updatedInfo || "";
         }
@@ -246,6 +310,13 @@ async function fetchCCMStatus() {
       }
     }
 
+    // ✅ NOVO: Busca ocorrência pelo número da linha
+    const occ = occurrencesMap.get(parsed.number) || {};
+    const reason = occ.reason || "";
+    const reasonAt = occ.reasonAt ? parseDateTime(occ.reasonAt) : "";
+    const reasonStatus = occ.reasonStatus || "";
+    const reasonSource = occ.reasonSource || config.CCM_OCCURRENCES_URL || "";
+
     const lineObj = {
       id: `linha-${parsed.number}-${parsed.color.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
       operator: operator || "Desconhecido",
@@ -253,7 +324,6 @@ async function fetchCCMStatus() {
       number: parsed.number,
       color: parsed.color,
 
-      // mantém os campos existentes, só melhorando o valor quando necessário
       statusCode: statusToCode(finalStatusText),
       status: finalStatusText,
       updatedInfo: info.updated || "",
@@ -261,13 +331,17 @@ async function fetchCCMStatus() {
       source: url,
       lastUpdate: new Date().toISOString(),
 
-      // ✅ NOVOS CAMPOS (não quebram nada, só ajudam o front)
-      dataQuality, // "live" | "fallback_last_good" | "unavailable"
-      note,        // aviso pequeno (pra mostrar no card)
-      rawStatus: rawStatusText, // o que veio do CCM (pra debug/transparência)
+      dataQuality,
+      note,
+      rawStatus: rawStatusText,
+      
+      // ✅ NOVOS CAMPOS (OCORRÊNCIAS)
+      reason: reason,
+      reasonAt: reasonAt,
+      reasonStatus: reasonStatus,
+      reasonSource: reasonSource,
     };
 
-    // Se o status final NÃO é indisponível, salva como "último bom"
     if (!isUnavailableStatusText(lineObj.status)) {
       lastGoodByLineKey.set(lineKey, {
         line: deepClone(lineObj),
@@ -278,7 +352,6 @@ async function fetchCCMStatus() {
     lines.push(lineObj);
   }
 
-  // remove duplicados
   const unique = new Map();
   for (const l of lines) unique.set(`${l.number}-${l.color}`, l);
 
@@ -328,7 +401,6 @@ async function getData() {
       lastUpdate: new Date().toISOString(),
       cached: false,
 
-      // ✅ NOVO: metadado útil pro front saber que existe fallback por linha
       meta: {
         lastGoodTtlMs: LAST_GOOD_TTL_MS,
       },
@@ -367,7 +439,6 @@ app.get("/", async (req, res) => {
   }
 });
 
-// ✅ pra você não ver mais Not Found ao testar /api/status
 app.get("/api/status", async (req, res) => {
   try {
     const data = await getData();
@@ -387,7 +458,6 @@ app.get("/health", (req, res) => {
       lastCacheUpdate: cache.timestamp ? new Date(cache.timestamp).toISOString() : null,
     },
 
-    // ✅ NOVO: mostra se já existem "last good" guardados
     lastGood: {
       ttlMs: LAST_GOOD_TTL_MS,
       count: lastGoodByLineKey.size,
@@ -413,13 +483,13 @@ app.get("/debug", (req, res) => {
   res.json({
     config: {
       CCM_STATUS_URL: config.CCM_STATUS_URL,
+      CCM_OCCURRENCES_URL: config.CCM_OCCURRENCES_URL, // ✅ NOVO
       CACHE_DURATION: cache.duration,
       REQUEST_TIMEOUT: config.REQUEST_TIMEOUT || 15000,
       LAST_GOOD_TTL_MS,
     },
     lastDebug,
 
-    // ✅ NOVO: chaves guardadas (pra você conferir se está salvando por linha)
     lastGoodKeys: Array.from(lastGoodByLineKey.keys()),
   });
 });
